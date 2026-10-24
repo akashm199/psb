@@ -1,0 +1,92 @@
+name: Maven Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Validate branch input
+        shell: bash
+        run: |
+          if [ -z "${{ github.event.inputs.branch }}" ]; then
+            echo "Branch input is required."
+            exit 1
+          fi
+          echo "Selected branch: ${{ github.event.inputs.branch }}"
+
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
+
+      - name: Detect Java version from Maven config
+        id: java-version
+        shell: bash
+        run: |
+          set -e
+          JAVA_VERSION=$(python - <<'PY'
+          import os
+          import re
+          import sys
+
+          text = ""
+          if os.path.exists("pom.xml"):
+              with open("pom.xml", encoding="utf-8") as f:
+                  text = f.read()
+
+          patterns = [
+              r"<java\.version>\s*([^<]+)",
+              r"<maven\.compiler\.release>\s*([^<]+)",
+              r"<maven\.compiler\.source>\s*([^<]+)",
+              r"<maven\.compiler\.target>\s*([^<]+)",
+          ]
+
+          for pattern in patterns:
+              match = re.search(pattern, text, re.IGNORECASE)
+              if match:
+                  print(match.group(1).strip())
+                  sys.exit(0)
+
+          print("17")
+          PY
+          )
+
+          echo "Detected Java version: ${JAVA_VERSION}"
+          echo "java_version=${JAVA_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ steps.java-version.outputs.java_version }}
+          cache: maven
+
+      - name: Run Maven build
+        shell: bash
+        run: |
+          set +e
+          mvn clean install > mvn-build.log 2>&1
+          BUILD_STATUS=$?
+          cat mvn-build.log
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "Maven build failed with exit code ${BUILD_STATUS}"
+            exit $BUILD_STATUS
+          fi
+
+      - name: Upload Maven log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-build-log
+          path: mvn-build.log
+          if-no-files-found: error
